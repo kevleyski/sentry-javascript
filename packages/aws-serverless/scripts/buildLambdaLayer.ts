@@ -1,7 +1,6 @@
 /* eslint-disable no-console */
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
-
 import { version } from '../package.json';
 
 /**
@@ -19,7 +18,7 @@ async function buildLambdaLayer(): Promise<void> {
   // We build a minified bundle, but it's standing in for the regular `index.js` file listed in `package.json`'s `main`
   // property, so we have to rename it so it's findable.
   fs.renameSync(
-    'build/aws/dist-serverless/nodejs/node_modules/@sentry/aws-serverless/build/npm/cjs/index.min.js',
+    'build/aws/dist-serverless/nodejs/node_modules/@sentry/aws-serverless/build/npm/cjs/index.debug.min.js',
     'build/aws/dist-serverless/nodejs/node_modules/@sentry/aws-serverless/build/npm/cjs/index.js',
   );
 

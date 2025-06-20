@@ -1,7 +1,6 @@
 module.exports = {
   env: {
     node: true,
-    jest: true,
   },
   extends: ['../../.eslintrc.js'],
   overrides: [
@@ -13,10 +12,14 @@ module.exports = {
       },
     },
     {
-      files: ['suites/**/*.ts'],
+      files: ['suites/**/*.ts', 'suites/**/*.mjs'],
       parserOptions: {
         project: ['tsconfig.test.json'],
         sourceType: 'module',
+        ecmaVersion: 'latest',
+      },
+      globals: {
+        fetch: 'readonly',
       },
       rules: {
         '@typescript-eslint/typedef': 'off',
@@ -29,6 +32,8 @@ module.exports = {
             'ts-expect-error': true,
           },
         ],
+        // We rely on having imports after init() is called for OTEL
+        'import/first': 'off',
       },
     },
   ],

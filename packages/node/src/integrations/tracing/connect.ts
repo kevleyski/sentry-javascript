@@ -1,11 +1,11 @@
 import { ConnectInstrumentation } from '@opentelemetry/instrumentation-connect';
 import type { IntegrationFn, Span } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   captureException,
   defineIntegration,
   getClient,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   spanToJSON,
 } from '@sentry/core';
 import { generateInstrumentOnce } from '../../otel/instrument';
@@ -104,7 +104,7 @@ function addConnectSpanAttributes(span: Span): void {
     [SEMANTIC_ATTRIBUTE_SENTRY_OP]: `${type}.connect`,
   });
 
-  // Also update the name, we don't need to "middleware - " prefix
+  // Also update the name, we don't need the "middleware - " prefix
   const name = attributes['connect.name'];
   if (typeof name === 'string') {
     span.updateName(name);

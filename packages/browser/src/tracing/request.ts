@@ -1,15 +1,5 @@
+import type { Client, HandlerDataXhr, SentryWrappedXMLHttpRequest, Span, WebFetchHeaders } from '@sentry/core';
 import {
-  SENTRY_XHR_DATA_KEY,
-  addPerformanceInstrumentationHandler,
-  addXhrInstrumentationHandler,
-  extractNetworkProtocol,
-} from '@sentry-internal/browser-utils';
-import type { XhrHint } from '@sentry-internal/browser-utils';
-import type { Client, HandlerDataXhr, SentryWrappedXMLHttpRequest, Span } from '@sentry/core';
-import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SentryNonRecordingSpan,
   addFetchEndInstrumentationHandler,
   addFetchInstrumentationHandler,
   browserPerformanceTimeOrigin,
@@ -20,12 +10,22 @@ import {
   hasSpansEnabled,
   instrumentFetchRequest,
   parseUrl,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SentryNonRecordingSpan,
   setHttpStatus,
   spanToJSON,
   startInactiveSpan,
   stringMatchesSomePattern,
   stripUrlQueryAndFragment,
 } from '@sentry/core';
+import type { XhrHint } from '@sentry-internal/browser-utils';
+import {
+  addPerformanceInstrumentationHandler,
+  addXhrInstrumentationHandler,
+  extractNetworkProtocol,
+  SENTRY_XHR_DATA_KEY,
+} from '@sentry-internal/browser-utils';
 import { WINDOW } from '../helpers';
 
 /** Options for Request Instrumentation */
@@ -98,6 +98,11 @@ export interface RequestInstrumentationOptions {
    * Default: (url: string) => true
    */
   shouldCreateSpanForRequest?(this: void, url: string): boolean;
+
+  /**
+   * Is called when spans are started for outgoing requests.
+   */
+  onRequestSpanStart?(span: Span, requestInformation: { headers?: WebFetchHeaders }): void;
 }
 
 const responseToSpanId = new WeakMap<object, string>();
@@ -119,10 +124,9 @@ export function instrumentOutgoingRequests(client: Client, _options?: Partial<Re
     shouldCreateSpanForRequest,
     enableHTTPTimings,
     tracePropagationTargets,
+    onRequestSpanStart,
   } = {
-    traceFetch: defaultRequestInstrumentationOptions.traceFetch,
-    traceXHR: defaultRequestInstrumentationOptions.traceXHR,
-    trackFetchStreamPerformance: defaultRequestInstrumentationOptions.trackFetchStreamPerformance,
+    ...defaultRequestInstrumentationOptions,
     ..._options,
   };
 
@@ -179,10 +183,12 @@ export function instrumentOutgoingRequests(client: Client, _options?: Partial<Re
           'http.url': fullUrl,
           'server.address': host,
         });
-      }
 
-      if (enableHTTPTimings && createdSpan) {
-        addHTTPTimings(createdSpan);
+        if (enableHTTPTimings) {
+          addHTTPTimings(createdSpan);
+        }
+
+        onRequestSpanStart?.(createdSpan, { headers: handlerData.headers });
       }
     });
   }
@@ -190,8 +196,18 @@ export function instrumentOutgoingRequests(client: Client, _options?: Partial<Re
   if (traceXHR) {
     addXhrInstrumentationHandler(handlerData => {
       const createdSpan = xhrCallback(handlerData, shouldCreateSpan, shouldAttachHeadersWithTargets, spans);
-      if (enableHTTPTimings && createdSpan) {
-        addHTTPTimings(createdSpan);
+      if (createdSpan) {
+        if (enableHTTPTimings) {
+          addHTTPTimings(createdSpan);
+        }
+
+        let headers;
+        try {
+          headers = new Headers(handlerData.xhr.__sentry_xhr_v3__?.request_headers);
+        } catch {
+          // noop
+        }
+        onRequestSpanStart?.(createdSpan, { headers });
       }
     });
   }
@@ -404,19 +420,36 @@ function setHeaderOnXhr(
   sentryTraceHeader: string,
   sentryBaggageHeader: string | undefined,
 ): void {
+  const originalHeaders = xhr.__sentry_xhr_v3__?.request_headers;
+
+  if (originalHeaders?.['sentry-trace']) {
+    // bail if a sentry-trace header is already set
+    return;
+  }
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     xhr.setRequestHeader!('sentry-trace', sentryTraceHeader);
     if (sentryBaggageHeader) {
-      // From MDN: "If this method is called several times with the same header, the values are merged into one single request header."
-      // We can therefore simply set a baggage header without checking what was there before
-      // https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      xhr.setRequestHeader!('baggage', sentryBaggageHeader);
+      // only add our headers if
+      // - no pre-existing baggage header exists
+      // - or it is set and doesn't yet contain sentry values
+      const originalBaggageHeader = originalHeaders?.['baggage'];
+      if (!originalBaggageHeader || !baggageHeaderHasSentryValues(originalBaggageHeader)) {
+        // From MDN: "If this method is called several times with the same header, the values are merged into one single request header."
+        // We can therefore simply set a baggage header without checking what was there before
+        // https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        xhr.setRequestHeader!('baggage', sentryBaggageHeader);
+      }
     }
   } catch (_) {
     // Error: InvalidStateError: Failed to execute 'setRequestHeader' on 'XMLHttpRequest': The object's state must be OPENED.
   }
+}
+
+function baggageHeaderHasSentryValues(baggageHeader: string): boolean {
+  return baggageHeader.split(',').some(value => value.trim().startsWith('sentry-'));
 }
 
 function getFullURL(url: string): string | undefined {

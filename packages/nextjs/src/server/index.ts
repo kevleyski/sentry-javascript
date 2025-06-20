@@ -6,22 +6,25 @@ import {
   SEMATTRS_HTTP_METHOD,
   SEMATTRS_HTTP_TARGET,
 } from '@opentelemetry/semantic-conventions';
+import type { EventProcessor } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   applySdkMetadata,
+  extractTraceparentData,
   getCapturedScopesOnSpan,
   getClient,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
   getRootSpan,
+  GLOBAL_OBJ,
+  logger,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   setCapturedScopesOnSpan,
   spanToJSON,
+  stripUrlQueryAndFragment,
 } from '@sentry/core';
-import { GLOBAL_OBJ, extractTraceparentData, logger, stripUrlQueryAndFragment } from '@sentry/core';
-import type { EventProcessor } from '@sentry/core';
 import type { NodeClient, NodeOptions } from '@sentry/node';
 import { getDefaultIntegrations, httpIntegration, init as nodeInit } from '@sentry/node';
 import { getScopesFromContext } from '@sentry/opentelemetry';
@@ -43,6 +46,7 @@ export { captureUnderscoreErrorException } from '../common/pages-router-instrume
 const globalWithInjectedValues = GLOBAL_OBJ as typeof GLOBAL_OBJ & {
   _sentryRewriteFramesDistDir?: string;
   _sentryRewritesTunnelPath?: string;
+  _sentryRelease?: string;
 };
 
 /**
@@ -115,6 +119,7 @@ export function init(options: NodeOptions): NodeClient | undefined {
 
   const opts: NodeOptions = {
     environment: process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV,
+    release: process.env._sentryRelease || globalWithInjectedValues._sentryRelease,
     defaultIntegrations: customDefaultIntegrations,
     ...options,
   };
@@ -171,6 +176,8 @@ export function init(options: NodeOptions): NodeClient | undefined {
         const route = spanAttributes['next.route'].replace(/\/route$/, '');
         rootSpan.updateName(route);
         rootSpan.setAttribute(ATTR_HTTP_ROUTE, route);
+        // Preserving the original attribute despite internally not depending on it
+        rootSpan.setAttribute('next.route', route);
       }
     }
 
@@ -317,11 +324,14 @@ export function init(options: NodeOptions): NodeClient | undefined {
       const method = event.contexts.trace.data[SEMATTRS_HTTP_METHOD];
       // eslint-disable-next-line deprecation/deprecation
       const target = event.contexts?.trace?.data?.[SEMATTRS_HTTP_TARGET];
-      const route = event.contexts.trace.data[ATTR_HTTP_ROUTE];
+      const route = event.contexts.trace.data[ATTR_HTTP_ROUTE] || event.contexts.trace.data['next.route'];
 
       if (typeof method === 'string' && typeof route === 'string') {
-        event.transaction = `${method} ${route.replace(/\/route$/, '')}`;
+        const cleanRoute = route.replace(/\/route$/, '');
+        event.transaction = `${method} ${cleanRoute}`;
         event.contexts.trace.data[SEMANTIC_ATTRIBUTE_SENTRY_SOURCE] = 'route';
+        // Preserve next.route in case it did not get hoisted
+        event.contexts.trace.data['next.route'] = cleanRoute;
       }
 
       // backfill transaction name for pages that would otherwise contain unparameterized routes
@@ -355,6 +365,16 @@ export function init(options: NodeOptions): NodeClient | undefined {
 
   if (process.env.NODE_ENV === 'development') {
     getGlobalScope().addEventProcessor(devErrorSymbolicationEventProcessor);
+  }
+
+  try {
+    // @ts-expect-error `process.turbopack` is a magic string that will be replaced by Next.js
+    if (process.turbopack) {
+      getGlobalScope().setTag('turbopack', true);
+    }
+  } catch {
+    // Noop
+    // The statement above can throw because process is not defined on the client
   }
 
   DEBUG_BUILD && logger.log('SDK successfully initialized');

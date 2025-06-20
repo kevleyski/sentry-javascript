@@ -1,28 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
 import {
-  Scope,
-  SentryError,
-  SyncPromise,
   addBreadcrumb,
   dsnToString,
   getCurrentScope,
   getIsolationScope,
   lastEventId,
   makeSession,
+  Scope,
   setCurrentClient,
+  SyncPromise,
   withMonitor,
 } from '../../src';
 import type { BaseClient, Client } from '../../src/client';
 import * as integrationModule from '../../src/integration';
-import type { Envelope, ErrorEvent, Event, SpanJSON, TransactionEvent } from '../../src/types-hoist';
-import * as loggerModule from '../../src/utils-hoist/logger';
-import * as miscModule from '../../src/utils-hoist/misc';
-import * as stringModule from '../../src/utils-hoist/string';
-import * as timeModule from '../../src/utils-hoist/time';
-import { TestClient, getDefaultTestClientOptions } from '../mocks/client';
+import type { Envelope } from '../../src/types-hoist/envelope';
+import type { ErrorEvent, Event, TransactionEvent } from '../../src/types-hoist/event';
+import type { SpanJSON } from '../../src/types-hoist/span';
+import * as loggerModule from '../../src/utils/logger';
+import * as miscModule from '../../src/utils/misc';
+import * as stringModule from '../../src/utils/string';
+import * as timeModule from '../../src/utils/time';
+import { getDefaultTestClientOptions, TestClient } from '../mocks/client';
 import { AdHocIntegration, TestIntegration } from '../mocks/integration';
 import { makeFakeTransport } from '../mocks/transport';
-import { clearGlobalScope } from './clear-global-scope';
+import { clearGlobalScope } from '../testutils';
 
 const PUBLIC_DSN = 'https://username@domain/123';
 // eslint-disable-next-line no-var
@@ -533,7 +534,7 @@ describe('Client', () => {
       );
     });
 
-    test('it adds a trace context to all events xxx', () => {
+    test('it adds a trace context to all events', () => {
       expect.assertions(1);
 
       const options = getDefaultTestClientOptions({ dsn: PUBLIC_DSN });
@@ -1206,7 +1207,7 @@ describe('Client', () => {
       const options = getDefaultTestClientOptions({ dsn: PUBLIC_DSN, beforeSend });
       const client = new TestClient(options);
       const captureExceptionSpy = vi.spyOn(client, 'captureException');
-      const loggerWarnSpy = vi.spyOn(loggerModule.logger, 'log');
+      const loggerLogSpy = vi.spyOn(loggerModule.logger, 'log');
 
       client.captureEvent({ message: 'hello' });
 
@@ -1215,7 +1216,7 @@ describe('Client', () => {
       // This proves that the reason the event didn't send/didn't get set on the test client is not because there was an
       // error, but because `beforeSend` returned `null`
       expect(captureExceptionSpy).not.toBeCalled();
-      expect(loggerWarnSpy).toBeCalledWith('before send for type `error` returned `null`, will not send event.');
+      expect(loggerLogSpy).toBeCalledWith('before send for type `error` returned `null`, will not send event.');
     });
 
     test('calls `beforeSendTransaction` and discards the event', () => {
@@ -1225,7 +1226,7 @@ describe('Client', () => {
       const options = getDefaultTestClientOptions({ dsn: PUBLIC_DSN, beforeSendTransaction });
       const client = new TestClient(options);
       const captureExceptionSpy = vi.spyOn(client, 'captureException');
-      const loggerWarnSpy = vi.spyOn(loggerModule.logger, 'log');
+      const loggerLogSpy = vi.spyOn(loggerModule.logger, 'log');
 
       client.captureEvent({ transaction: '/dogs/are/great', type: 'transaction' });
 
@@ -1234,7 +1235,7 @@ describe('Client', () => {
       // This proves that the reason the event didn't send/didn't get set on the test client is not because there was an
       // error, but because `beforeSendTransaction` returned `null`
       expect(captureExceptionSpy).not.toBeCalled();
-      expect(loggerWarnSpy).toBeCalledWith('before send for type `transaction` returned `null`, will not send event.');
+      expect(loggerLogSpy).toBeCalledWith('before send for type `transaction` returned `null`, will not send event.');
     });
 
     test('does not discard span and warn when returning null from `beforeSendSpan', () => {
@@ -1293,9 +1294,7 @@ describe('Client', () => {
 
         expect(beforeSend).toHaveBeenCalled();
         expect(TestClient.instance!.event).toBeUndefined();
-        expect(loggerWarnSpy).toBeCalledWith(
-          new SentryError('before send for type `error` must return `null` or a valid event.'),
-        );
+        expect(loggerWarnSpy).toBeCalledWith('before send for type `error` must return `null` or a valid event.');
       }
     });
 
@@ -1314,9 +1313,7 @@ describe('Client', () => {
 
         expect(beforeSendTransaction).toHaveBeenCalled();
         expect(TestClient.instance!.event).toBeUndefined();
-        expect(loggerWarnSpy).toBeCalledWith(
-          new SentryError('before send for type `transaction` must return `null` or a valid event.'),
-        );
+        expect(loggerWarnSpy).toBeCalledWith('before send for type `transaction` must return `null` or a valid event.');
       }
     });
 
@@ -1688,9 +1685,7 @@ describe('Client', () => {
         originalException: exception,
       });
       expect(loggerWarnSpy).toBeCalledWith(
-        new SentryError(
-          `Event processing pipeline threw an error, original event will not be sent. Details have been sent as a new event.\nReason: ${exception}`,
-        ),
+        `Event processing pipeline threw an error, original event will not be sent. Details have been sent as a new event.\nReason: ${exception}`,
       );
     });
 

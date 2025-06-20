@@ -1,14 +1,15 @@
-import { afterAll, describe, expect, test } from 'vitest';
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import { afterAll, describe, expect } from 'vitest';
+import { assertSentryTransaction } from '../../../utils/assertions';
+import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
 
 describe('express tracing', () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  describe('CJS', () => {
+  createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
     test('should create and send transactions for Express routes and spans for middlewares.', async () => {
-      const runner = createRunner(__dirname, 'server.js')
+      const runner = createRunner()
         .expect({
           transaction: {
             contexts: {
@@ -51,7 +52,7 @@ describe('express tracing', () => {
     });
 
     test('should set a correct transaction name for routes specified in RegEx', async () => {
-      const runner = createRunner(__dirname, 'server.js')
+      const runner = createRunner()
         .expect({
           transaction: {
             transaction: 'GET /\\/test\\/regex/',
@@ -77,10 +78,36 @@ describe('express tracing', () => {
       await runner.completed();
     });
 
+    test('handles root page correctly', async () => {
+      const runner = createRunner()
+        .expect({
+          transaction: {
+            transaction: 'GET /',
+          },
+        })
+        .start();
+      runner.makeRequest('get', '/');
+      await runner.completed();
+    });
+
+    test('ignores 404 routes by default', async () => {
+      const runner = createRunner()
+        .expect({
+          // No transaction is sent for the 404 route
+          transaction: {
+            transaction: 'GET /',
+          },
+        })
+        .start();
+      runner.makeRequest('get', '/does-not-exist', { expectError: true });
+      runner.makeRequest('get', '/');
+      await runner.completed();
+    });
+
     test.each([['array1'], ['array5']])(
       'should set a correct transaction name for routes consisting of arrays of routes for %p',
-      ((segment: string, done: () => void) => {
-        createRunner(__dirname, 'server.js')
+      async (segment: string) => {
+        const runner = await createRunner()
           .expect({
             transaction: {
               transaction: 'GET /test/array1,/\\/test\\/array[2-9]/',
@@ -101,9 +128,10 @@ describe('express tracing', () => {
               },
             },
           })
-          .start(done)
-          .makeRequest('get', `/test/${segment}`);
-      }) as any,
+          .start();
+        await runner.makeRequest('get', `/test/${segment}`);
+        await runner.completed();
+      },
     );
 
     test.each([
@@ -115,8 +143,8 @@ describe('express tracing', () => {
       ['arr55/required/lastParam'],
       ['arr/requiredPath/optionalPath/'],
       ['arr/requiredPath/optionalPath/lastParam'],
-    ])('should handle more complex regexes in route arrays correctly for %p', ((segment: string, done: () => void) => {
-      createRunner(__dirname, 'server.js')
+    ])('should handle more complex regexes in route arrays correctly for %p', async (segment: string) => {
+      const runner = await createRunner()
         .expect({
           transaction: {
             transaction: 'GET /test/arr/:id,/\\/test\\/arr[0-9]*\\/required(path)?(\\/optionalPath)?\\/(lastParam)?/',
@@ -137,13 +165,14 @@ describe('express tracing', () => {
             },
           },
         })
-        .start(done)
-        .makeRequest('get', `/test/${segment}`);
-    }) as any);
+        .start();
+      await runner.makeRequest('get', `/test/${segment}`);
+      await runner.completed();
+    });
 
     describe('request data', () => {
       test('correctly captures JSON request data', async () => {
-        const runner = createRunner(__dirname, 'server.js')
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -163,12 +192,17 @@ describe('express tracing', () => {
           })
           .start();
 
-        runner.makeRequest('post', '/test-post', { data: { foo: 'bar', other: 1 } });
+        runner.makeRequest('post', '/test-post', {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          data: JSON.stringify({ foo: 'bar', other: 1 }),
+        });
         await runner.completed();
       });
 
       test('correctly captures plain text request data', async () => {
-        const runner = createRunner(__dirname, 'server.js')
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -193,7 +227,7 @@ describe('express tracing', () => {
       });
 
       test('correctly captures text buffer request data', async () => {
-        const runner = createRunner(__dirname, 'server.js')
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -218,7 +252,7 @@ describe('express tracing', () => {
       });
 
       test('correctly captures non-text buffer request data', async () => {
-        const runner = createRunner(__dirname, 'server.js')
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -244,6 +278,87 @@ describe('express tracing', () => {
         });
         await runner.completed();
       });
+
+      test('correctly ignores request data', async () => {
+        const runner = createRunner()
+          .expect({
+            transaction: e => {
+              assertSentryTransaction(e, {
+                transaction: 'POST /test-post-ignore-body',
+                request: {
+                  url: expect.stringMatching(/^http:\/\/localhost:(\d+)\/test-post-ignore-body$/),
+                  method: 'POST',
+                  headers: {
+                    'user-agent': expect.stringContaining(''),
+                    'content-type': 'application/octet-stream',
+                  },
+                },
+              });
+              // Ensure the request body has been ignored
+              expect(e).have.property('request').that.does.not.have.property('data');
+            },
+          })
+          .start();
+
+        runner.makeRequest('post', '/test-post-ignore-body', {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          data: Buffer.from('some plain text in buffer'),
+        });
+        await runner.completed();
+      });
     });
+  });
+
+  describe('filter status codes', () => {
+    createEsmAndCjsTests(
+      __dirname,
+      'scenario-filterStatusCode.mjs',
+      'instrument-filterStatusCode.mjs',
+      (createRunner, test) => {
+        // We opt-out of the default 404 filtering in order to test how 404 spans are handled
+        test('handles 404 route correctly', async () => {
+          const runner = createRunner()
+            .expect({
+              transaction: {
+                // FIXME: This is incorrect, sadly :(
+                transaction: 'GET /',
+                contexts: {
+                  trace: {
+                    span_id: expect.stringMatching(/[a-f0-9]{16}/),
+                    trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+                    data: {
+                      'http.response.status_code': 404,
+                      url: expect.stringMatching(/\/does-not-exist$/),
+                      'http.method': 'GET',
+                      'http.url': expect.stringMatching(/\/does-not-exist$/),
+                      'http.target': '/does-not-exist',
+                    },
+                    op: 'http.server',
+                    status: 'not_found',
+                  },
+                },
+              },
+            })
+            .start();
+          runner.makeRequest('get', '/does-not-exist', { expectError: true });
+          await runner.completed();
+        });
+
+        test('filters defined status codes', async () => {
+          const runner = createRunner()
+            .expect({
+              transaction: {
+                transaction: 'GET /',
+              },
+            })
+            .start();
+          await runner.makeRequest('get', '/499', { expectError: true });
+          await runner.makeRequest('get', '/300', { expectError: true });
+          await runner.makeRequest('get', '/399', { expectError: true });
+          await runner.makeRequest('get', '/');
+          await runner.completed();
+        });
+      },
+    );
   });
 });

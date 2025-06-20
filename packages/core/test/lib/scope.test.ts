@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it, test, vi } from 'vitest';
-import type { Client } from '../../src';
+import type { Client } from '../../src/client';
 import {
-  applyScopeDataToEvent,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
   withIsolationScope,
   withScope,
-} from '../../src';
+} from '../../src/currentScopes';
 import { Scope } from '../../src/scope';
-import type { Breadcrumb, Event } from '../../src/types-hoist';
-import { TestClient, getDefaultTestClientOptions } from '../mocks/client';
-import { clearGlobalScope } from './clear-global-scope';
+import type { Breadcrumb } from '../../src/types-hoist/breadcrumb';
+import type { Event } from '../../src/types-hoist/event';
+import { applyScopeDataToEvent } from '../../src/utils/applyScopeDataToEvent';
+import { getDefaultTestClientOptions, TestClient } from '../mocks/client';
+import { clearGlobalScope } from '../testutils';
 
 describe('Scope', () => {
   beforeEach(() => {
@@ -184,6 +185,12 @@ describe('Scope', () => {
         scope.addBreadcrumb({ message: 'test' }, 111);
       }
       expect(scope['_breadcrumbs']).toHaveLength(111);
+    });
+
+    test('addBreadcrumb will truncate the stored messages', () => {
+      const scope = new Scope();
+      scope.addBreadcrumb({ message: 'A'.repeat(10_000) });
+      expect(scope['_breadcrumbs'][0]?.message).toBe(`${'A'.repeat(2048)}...`);
     });
 
     test('setLevel', () => {

@@ -1,11 +1,12 @@
-import type { Event, IntegrationFn, StackFrame } from '../types-hoist';
-
 import { DEBUG_BUILD } from '../debug-build';
 import { defineIntegration } from '../integration';
-import { logger } from '../utils-hoist/logger';
-import { getEventDescription } from '../utils-hoist/misc';
-import { stringMatchesSomePattern } from '../utils-hoist/string';
+import type { Event } from '../types-hoist/event';
+import type { IntegrationFn } from '../types-hoist/integration';
+import type { StackFrame } from '../types-hoist/stackframe';
 import { getPossibleEventMessages } from '../utils/eventUtils';
+import { logger } from '../utils/logger';
+import { getEventDescription } from '../utils/misc';
+import { stringMatchesSomePattern } from '../utils/string';
 
 // "Script error." is hard coded into browsers for errors that it can't read.
 // this is the result of a script being pulled in from an external domain and CORS.
@@ -102,19 +103,12 @@ function _mergeOptions(
       ...(internalOptions.disableErrorDefaults ? [] : DEFAULT_IGNORE_ERRORS),
     ],
     ignoreTransactions: [...(internalOptions.ignoreTransactions || []), ...(clientOptions.ignoreTransactions || [])],
-    ignoreInternal: internalOptions.ignoreInternal !== undefined ? internalOptions.ignoreInternal : true,
   };
 }
 
 function _shouldDropEvent(event: Event, options: Partial<EventFiltersOptions>): boolean {
   if (!event.type) {
     // Filter errors
-
-    if (options.ignoreInternal && _isSentryError(event)) {
-      DEBUG_BUILD &&
-        logger.warn(`Event dropped due to being internal Sentry Error.\nEvent: ${getEventDescription(event)}`);
-      return true;
-    }
     if (_isIgnoredError(event, options.ignoreErrors)) {
       DEBUG_BUILD &&
         logger.warn(
@@ -194,16 +188,6 @@ function _isAllowedUrl(event: Event, allowUrls?: Array<string | RegExp>): boolea
   }
   const url = _getEventFilterUrl(event);
   return !url ? true : stringMatchesSomePattern(url, allowUrls);
-}
-
-function _isSentryError(event: Event): boolean {
-  try {
-    // @ts-expect-error can't be a sentry error if undefined
-    return event.exception.values[0].type === 'SentryError';
-  } catch (e) {
-    // ignore
-  }
-  return false;
 }
 
 function _getLastValidUrl(frames: StackFrame[] = []): string | null {

@@ -2,9 +2,35 @@
  * @vitest-environment jsdom
  */
 
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
+import type { Span, StartSpanOptions } from '@sentry/core';
+import {
+  getActiveSpan,
+  getCurrentScope,
+  getDynamicSamplingContextFromSpan,
+  getIsolationScope,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
+  setCurrentClient,
+  spanIsSampled,
+  spanToJSON,
+  startInactiveSpan,
+  TRACING_DEFAULTS,
+} from '@sentry/core';
+import { JSDOM } from 'jsdom';
 import { TextDecoder, TextEncoder } from 'util';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BrowserClient } from '../../src/client';
+import { WINDOW } from '../../src/helpers';
+import {
+  browserTracingIntegration,
+  startBrowserTracingNavigationSpan,
+  startBrowserTracingPageLoadSpan,
+} from '../../src/tracing/browserTracingIntegration';
+import { PREVIOUS_TRACE_TMP_SPAN_ATTRIBUTE } from '../../src/tracing/linkedTraces';
+import { getDefaultBrowserClientOptions } from '../helper/browser-client-options';
+
 const oldTextEncoder = global.window.TextEncoder;
 const oldTextDecoder = global.window.TextDecoder;
 // @ts-expect-error patch the encoder on the window, else importing JSDOM fails (deleted in afterAll)
@@ -14,32 +40,6 @@ delete global.window.TextDecoder;
 global.window.TextEncoder = TextEncoder;
 // @ts-expect-error patch the encoder on the window, else importing JSDOM fails (deleted in afterAll)
 global.window.TextDecoder = TextDecoder;
-
-import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  TRACING_DEFAULTS,
-  getActiveSpan,
-  getCurrentScope,
-  getDynamicSamplingContextFromSpan,
-  getIsolationScope,
-  setCurrentClient,
-  spanIsSampled,
-  spanToJSON,
-  startInactiveSpan,
-} from '@sentry/core';
-import type { Span, StartSpanOptions } from '@sentry/core';
-import { JSDOM } from 'jsdom';
-import { BrowserClient } from '../../src/client';
-import { WINDOW } from '../../src/helpers';
-import {
-  browserTracingIntegration,
-  startBrowserTracingNavigationSpan,
-  startBrowserTracingPageLoadSpan,
-} from '../../src/tracing/browserTracingIntegration';
-import { getDefaultBrowserClientOptions } from '../helper/browser-client-options';
 
 // We're setting up JSDom here because the Next.js routing instrumentations requires a few things to be present on pageload:
 // 1. Access to window.document API for `window.document.getElementById`
@@ -71,6 +71,9 @@ describe('browserTracingIntegration', () => {
     getIsolationScope().clear();
     getCurrentScope().setClient(undefined);
     document.head.innerHTML = '';
+
+    // We want to suppress the "Multiple browserTracingIntegration instances are not supported." warnings
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -202,6 +205,7 @@ describe('browserTracingIntegration', () => {
         [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.browser',
         [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
         [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+        [PREVIOUS_TRACE_TMP_SPAN_ATTRIBUTE]: `${span?.spanContext().traceId}-${span?.spanContext().spanId}-1`,
       },
       links: [
         {
@@ -239,6 +243,7 @@ describe('browserTracingIntegration', () => {
         [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.browser',
         [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
         [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+        [PREVIOUS_TRACE_TMP_SPAN_ATTRIBUTE]: `${span2?.spanContext().traceId}-${span2?.spanContext().spanId}-1`,
       },
       links: [
         {
@@ -502,6 +507,7 @@ describe('browserTracingIntegration', () => {
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'manual',
           [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
+          [PREVIOUS_TRACE_TMP_SPAN_ATTRIBUTE]: expect.stringMatching(/[a-f0-9]{32}-[a-f0-9]{16}-1/),
         },
         links: [
           {
@@ -728,6 +734,8 @@ describe('browserTracingIntegration', () => {
         sampled: true,
         sampleRand: expect.any(Number),
         dsc: {
+          release: undefined,
+          org_id: undefined,
           environment: 'production',
           public_key: 'examplePublicKey',
           sample_rate: '1',
@@ -768,6 +776,8 @@ describe('browserTracingIntegration', () => {
         sampled: false,
         sampleRand: expect.any(Number),
         dsc: {
+          release: undefined,
+          org_id: undefined,
           environment: 'production',
           public_key: 'examplePublicKey',
           sample_rate: '0',
@@ -892,6 +902,8 @@ describe('browserTracingIntegration', () => {
 
       expect(dynamicSamplingContext).toBeDefined();
       expect(dynamicSamplingContext).toStrictEqual({
+        release: undefined,
+        org_id: undefined,
         environment: 'production',
         public_key: 'examplePublicKey',
         sample_rate: '1',

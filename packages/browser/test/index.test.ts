@@ -2,25 +2,20 @@
  * @vitest-environment jsdom
  */
 
-import type { Mock } from 'vitest';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import {
-  SDK_VERSION,
   eventFiltersIntegration,
   getGlobalScope,
   getIsolationScope,
   getReportDialogEndpoint,
   lastEventId,
+  SDK_VERSION,
 } from '@sentry/core';
 import * as utils from '@sentry/core';
-
-import { setCurrentClient } from '../src';
+import type { Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  BrowserClient,
-  Scope,
-  WINDOW,
   addBreadcrumb,
+  BrowserClient,
   captureEvent,
   captureException,
   captureMessage,
@@ -28,8 +23,11 @@ import {
   getClient,
   getCurrentScope,
   init,
-  showReportDialog,
   logger,
+  Scope,
+  setCurrentClient,
+  showReportDialog,
+  WINDOW,
 } from '../src';
 import { getDefaultBrowserClientOptions } from './helper/browser-client-options';
 import { makeSimpleTransport } from './mocks/simpletransport';
@@ -334,7 +332,6 @@ describe('SentryBrowser', () => {
       expect(logger.warn).toBeDefined();
       expect(logger.error).toBeDefined();
       expect(logger.fatal).toBeDefined();
-      expect(logger.critical).toBeDefined();
     });
   });
 });

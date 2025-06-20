@@ -1,10 +1,10 @@
-import type { Event, EventProcessor, Integration } from '../../../src/types-hoist';
-
 import { describe, expect, it } from 'vitest';
 import type { EventFiltersOptions } from '../../../src/integrations/eventFilters';
-import { eventFiltersIntegration } from '../../../src/integrations/eventFilters';
-import { inboundFiltersIntegration } from '../../../src/integrations/eventFilters';
-import { TestClient, getDefaultTestClientOptions } from '../../mocks/client';
+import { eventFiltersIntegration, inboundFiltersIntegration } from '../../../src/integrations/eventFilters';
+import type { Event } from '../../../src/types-hoist/event';
+import type { EventProcessor } from '../../../src/types-hoist/eventprocessor';
+import type { Integration } from '../../../src/types-hoist/integration';
+import { getDefaultTestClientOptions, TestClient } from '../../mocks/client';
 
 const PUBLIC_DSN = 'https://username@domain/123';
 
@@ -311,17 +311,6 @@ const EVENT_WITH_VALUE: Event = {
   },
 };
 
-const SENTRY_EVENT: Event = {
-  exception: {
-    values: [
-      {
-        type: 'SentryError',
-        value: 'something something server connection',
-      },
-    ],
-  },
-};
-
 const SCRIPT_ERROR_EVENT: Event = {
   exception: {
     values: [
@@ -425,22 +414,6 @@ describe.each([
   ['InboundFilters', inboundFiltersIntegration],
   ['EventFilters', eventFiltersIntegration],
 ])('%s', (_, integrationFn) => {
-  describe('_isSentryError', () => {
-    it('should work as expected', () => {
-      const eventProcessor = createEventFiltersEventProcessor(integrationFn);
-      expect(eventProcessor(MESSAGE_EVENT, {})).toBe(MESSAGE_EVENT);
-      expect(eventProcessor(EXCEPTION_EVENT, {})).toBe(EXCEPTION_EVENT);
-      expect(eventProcessor(SENTRY_EVENT, {})).toBe(null);
-    });
-
-    it('should be configurable', () => {
-      const eventProcessor = createEventFiltersEventProcessor(integrationFn, { ignoreInternal: false });
-      expect(eventProcessor(MESSAGE_EVENT, {})).toBe(MESSAGE_EVENT);
-      expect(eventProcessor(EXCEPTION_EVENT, {})).toBe(EXCEPTION_EVENT);
-      expect(eventProcessor(SENTRY_EVENT, {})).toBe(SENTRY_EVENT);
-    });
-  });
-
   describe('ignoreErrors', () => {
     it('string filter with partial match', () => {
       const eventProcessor = createEventFiltersEventProcessor(integrationFn, {

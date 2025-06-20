@@ -1,28 +1,29 @@
-import { RemixInstrumentation } from 'opentelemetry-instrumentation-remix';
-
-import { SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, defineIntegration } from '@sentry/core';
 import type { Client, IntegrationFn, Span } from '@sentry/core';
+import { defineIntegration, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN } from '@sentry/core';
 import { generateInstrumentOnce, getClient, spanToJSON } from '@sentry/node';
 import type { RemixOptions } from '../../utils/remixOptions';
+import { RemixInstrumentation } from '../../vendor/instrumentation';
 
 const INTEGRATION_NAME = 'Remix';
 
-const instrumentRemix = generateInstrumentOnce<RemixOptions>(
-  INTEGRATION_NAME,
-  (_options?: RemixOptions) =>
-    new RemixInstrumentation({
-      actionFormDataAttributes: _options?.sendDefaultPii ? _options?.captureActionFormDataKeys : undefined,
-    }),
-);
+interface RemixInstrumentationOptions {
+  actionFormDataAttributes?: Record<string, string | boolean>;
+}
+
+const instrumentRemix = generateInstrumentOnce(INTEGRATION_NAME, (options?: RemixInstrumentationOptions) => {
+  return new RemixInstrumentation(options);
+});
 
 const _remixIntegration = (() => {
   return {
     name: 'Remix',
     setupOnce() {
       const client = getClient();
-      const options = client?.getOptions();
+      const options = client?.getOptions() as RemixOptions | undefined;
 
-      instrumentRemix(options);
+      instrumentRemix({
+        actionFormDataAttributes: options?.sendDefaultPii ? options?.captureActionFormDataKeys : undefined,
+      });
     },
 
     setup(client: Client) {

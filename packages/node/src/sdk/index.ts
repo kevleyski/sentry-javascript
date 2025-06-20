@@ -1,7 +1,7 @@
 import type { Integration, Options } from '@sentry/core';
 import {
+  consoleIntegration,
   consoleSandbox,
-  dropUndefinedKeys,
   functionToStringIntegration,
   getCurrentScope,
   getIntegrationsToSetup,
@@ -21,7 +21,6 @@ import {
 } from '@sentry/opentelemetry';
 import { DEBUG_BUILD } from '../debug-build';
 import { childProcessIntegration } from '../integrations/childProcess';
-import { consoleIntegration } from '../integrations/console';
 import { nodeContextIntegration } from '../integrations/context';
 import { contextLinesIntegration } from '../integrations/contextlines';
 import { httpIntegration } from '../integrations/http';
@@ -40,10 +39,6 @@ import { envToBool } from '../utils/envToBool';
 import { defaultStackParser, getSentryRelease } from './api';
 import { NodeClient } from './client';
 import { initOpenTelemetry, maybeInitializeEsmLoader } from './initOtel';
-
-function getCjsOnlyIntegrations(): Integration[] {
-  return isCjs() ? [modulesIntegration()] : [];
-}
 
 /**
  * Get default integrations, excluding performance.
@@ -70,7 +65,7 @@ export function getDefaultIntegrationsWithoutPerformance(): Integration[] {
     nodeContextIntegration(),
     childProcessIntegration(),
     processSessionIntegration(),
-    ...getCjsOnlyIntegrations(),
+    modulesIntegration(),
   ];
 }
 
@@ -201,50 +196,33 @@ function getClientOptions(
   getDefaultIntegrationsImpl: (options: Options) => Integration[],
 ): NodeClientOptions {
   const release = getRelease(options.release);
-
-  if (options.spotlight == null) {
-    const spotlightEnv = envToBool(process.env.SENTRY_SPOTLIGHT, { strict: true });
-    if (spotlightEnv == null) {
-      options.spotlight = process.env.SENTRY_SPOTLIGHT;
-    } else {
-      options.spotlight = spotlightEnv;
-    }
-  }
-
+  const spotlight =
+    options.spotlight ?? envToBool(process.env.SENTRY_SPOTLIGHT, { strict: true }) ?? process.env.SENTRY_SPOTLIGHT;
   const tracesSampleRate = getTracesSampleRate(options.tracesSampleRate);
 
-  const baseOptions = dropUndefinedKeys({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.SENTRY_ENVIRONMENT,
-    sendClientReports: true,
-  });
-
-  const overwriteOptions = dropUndefinedKeys({
+  const mergedOptions = {
+    ...options,
+    dsn: options.dsn ?? process.env.SENTRY_DSN,
+    environment: options.environment ?? process.env.SENTRY_ENVIRONMENT,
+    sendClientReports: options.sendClientReports ?? true,
+    transport: options.transport ?? makeNodeTransport,
+    stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
     release,
     tracesSampleRate,
-    transport: options.transport || makeNodeTransport,
-  });
-
-  const mergedOptions = {
-    ...baseOptions,
-    ...options,
-    ...overwriteOptions,
+    spotlight,
+    debug: envToBool(options.debug ?? process.env.SENTRY_DEBUG),
   };
 
-  if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = getDefaultIntegrationsImpl(mergedOptions);
-  }
+  const integrations = options.integrations;
+  const defaultIntegrations = options.defaultIntegrations ?? getDefaultIntegrationsImpl(mergedOptions);
 
-  const clientOptions: NodeClientOptions = {
+  return {
     ...mergedOptions,
-    stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
     integrations: getIntegrationsToSetup({
-      defaultIntegrations: options.defaultIntegrations,
-      integrations: options.integrations,
+      defaultIntegrations,
+      integrations,
     }),
   };
-
-  return clientOptions;
 }
 
 function getRelease(release: NodeOptions['release']): string | undefined {

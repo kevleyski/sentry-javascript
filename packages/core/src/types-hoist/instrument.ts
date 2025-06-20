@@ -61,6 +61,8 @@ export interface HandlerDataFetch {
   error?: unknown;
   // This is to be consumed by the HttpClient integration
   virtualError?: unknown;
+  /** Headers that the user passed to the fetch request. */
+  headers?: WebFetchHeaders;
 }
 
 export interface HandlerDataDom {
@@ -76,7 +78,9 @@ export interface HandlerDataConsole {
 }
 
 export interface HandlerDataHistory {
+  /** The full URL of the previous page */
   from: string | undefined;
+  /** The full URL of the new page */
   to: string;
 }
 

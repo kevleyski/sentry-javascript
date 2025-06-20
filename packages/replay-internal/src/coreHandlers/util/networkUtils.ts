@@ -1,7 +1,6 @@
-import { serializeFormData } from '@sentry-internal/browser-utils';
+import { stringMatchesSomePattern } from '@sentry/core';
 import type { NetworkMetaWarning } from '@sentry-internal/browser-utils';
-import { dropUndefinedKeys, stringMatchesSomePattern } from '@sentry/core';
-
+import { serializeFormData } from '@sentry-internal/browser-utils';
 import { NETWORK_BODY_MAX_SIZE, WINDOW } from '../../constants';
 import type {
   NetworkBody,
@@ -98,12 +97,12 @@ export function makeNetworkReplayBreadcrumb(
     start: startTimestamp / 1000,
     end: endTimestamp / 1000,
     name: url,
-    data: dropUndefinedKeys({
+    data: {
       method,
       statusCode,
       request,
       response,
-    }),
+    },
   };
 
   return result;

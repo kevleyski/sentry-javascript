@@ -1,72 +1,88 @@
 /* eslint-disable max-lines */
-import type {
-  Breadcrumb,
-  BreadcrumbHint,
-  CheckIn,
-  ClientOptions,
-  DataCategory,
-  DsnComponents,
-  DynamicSamplingContext,
-  Envelope,
-  ErrorEvent,
-  Event,
-  EventDropReason,
-  EventHint,
-  EventProcessor,
-  FeedbackEvent,
-  FetchBreadcrumbHint,
-  Integration,
-  MonitorConfig,
-  Outcome,
-  ParameterizedString,
-  SdkMetadata,
-  Session,
-  SessionAggregates,
-  SeverityLevel,
-  Span,
-  SpanAttributes,
-  SpanContextData,
-  SpanJSON,
-  StartSpanOptions,
-  TraceContext,
-  TransactionEvent,
-  Transport,
-  TransportMakeRequestResponse,
-  XhrBreadcrumbHint,
-} from './types-hoist';
-
 import { getEnvelopeEndpointWithUrlEncodedAuth } from './api';
 import { DEFAULT_ENVIRONMENT } from './constants';
-import { getCurrentScope, getIsolationScope, getTraceContextFromScope } from './currentScopes';
+import { getCurrentScope, getIsolationScope, getTraceContextFromScope, withScope } from './currentScopes';
 import { DEBUG_BUILD } from './debug-build';
 import { createEventEnvelope, createSessionEnvelope } from './envelope';
 import type { IntegrationIndex } from './integration';
-import { afterSetupIntegrations } from './integration';
-import { setupIntegration, setupIntegrations } from './integration';
+import { afterSetupIntegrations, setupIntegration, setupIntegrations } from './integration';
 import type { Scope } from './scope';
 import { updateSession } from './session';
 import {
   getDynamicSamplingContextFromScope,
   getDynamicSamplingContextFromSpan,
 } from './tracing/dynamicSamplingContext';
-import { createClientReportEnvelope } from './utils-hoist/clientreport';
-import { dsnToString, makeDsn } from './utils-hoist/dsn';
-import { addItemToEnvelope, createAttachmentEnvelopeItem } from './utils-hoist/envelope';
-import { SentryError } from './utils-hoist/error';
-import { isParameterizedString, isPlainObject, isPrimitive, isThenable } from './utils-hoist/is';
-import { logger } from './utils-hoist/logger';
-import { checkOrSetAlreadyCaught, uuid4 } from './utils-hoist/misc';
-import { SyncPromise, rejectedSyncPromise, resolvedSyncPromise } from './utils-hoist/syncpromise';
+import type { Breadcrumb, BreadcrumbHint, FetchBreadcrumbHint, XhrBreadcrumbHint } from './types-hoist/breadcrumb';
+import type { CheckIn, MonitorConfig } from './types-hoist/checkin';
+import type { EventDropReason, Outcome } from './types-hoist/clientreport';
+import type { TraceContext } from './types-hoist/context';
+import type { DataCategory } from './types-hoist/datacategory';
+import type { DsnComponents } from './types-hoist/dsn';
+import type { DynamicSamplingContext, Envelope } from './types-hoist/envelope';
+import type { ErrorEvent, Event, EventHint, TransactionEvent } from './types-hoist/event';
+import type { EventProcessor } from './types-hoist/eventprocessor';
+import type { FeedbackEvent } from './types-hoist/feedback';
+import type { Integration } from './types-hoist/integration';
+import type { Log } from './types-hoist/log';
+import type { ClientOptions } from './types-hoist/options';
+import type { ParameterizedString } from './types-hoist/parameterize';
+import type { SdkMetadata } from './types-hoist/sdkmetadata';
+import type { Session, SessionAggregates } from './types-hoist/session';
+import type { SeverityLevel } from './types-hoist/severity';
+import type { Span, SpanAttributes, SpanContextData, SpanJSON } from './types-hoist/span';
+import type { StartSpanOptions } from './types-hoist/startSpanOptions';
+import type { Transport, TransportMakeRequestResponse } from './types-hoist/transport';
+import { createClientReportEnvelope } from './utils/clientreport';
+import { dsnToString, makeDsn } from './utils/dsn';
+import { addItemToEnvelope, createAttachmentEnvelopeItem } from './utils/envelope';
 import { getPossibleEventMessages } from './utils/eventUtils';
+import { isParameterizedString, isPlainObject, isPrimitive, isThenable } from './utils/is';
+import { logger } from './utils/logger';
 import { merge } from './utils/merge';
+import { checkOrSetAlreadyCaught, uuid4 } from './utils/misc';
 import { parseSampleRate } from './utils/parseSampleRate';
 import { prepareEvent } from './utils/prepareEvent';
-import { showSpanDropWarning, spanToTraceContext } from './utils/spanUtils';
+import { getActiveSpan, showSpanDropWarning, spanToTraceContext } from './utils/spanUtils';
+import { rejectedSyncPromise, resolvedSyncPromise, SyncPromise } from './utils/syncpromise';
 import { convertSpanJsonToTransactionEvent, convertTransactionEventToSpanJson } from './utils/transactionEvent';
-import { _getSpanForScope } from './utils/spanOnScope';
 
 const ALREADY_SEEN_ERROR = "Not capturing exception because it's already been captured.";
 const MISSING_RELEASE_FOR_SESSION_ERROR = 'Discarded session because of missing or non-string release';
+
+const INTERNAL_ERROR_SYMBOL = Symbol.for('SentryInternalError');
+const DO_NOT_SEND_EVENT_SYMBOL = Symbol.for('SentryDoNotSendEventError');
+
+interface InternalError {
+  message: string;
+  [INTERNAL_ERROR_SYMBOL]: true;
+}
+
+interface DoNotSendEventError {
+  message: string;
+  [DO_NOT_SEND_EVENT_SYMBOL]: true;
+}
+
+function _makeInternalError(message: string): InternalError {
+  return {
+    message,
+    [INTERNAL_ERROR_SYMBOL]: true,
+  };
+}
+
+function _makeDoNotSendEventError(message: string): DoNotSendEventError {
+  return {
+    message,
+    [DO_NOT_SEND_EVENT_SYMBOL]: true,
+  };
+}
+
+function _isInternalError(error: unknown): error is InternalError {
+  return !!error && typeof error === 'object' && INTERNAL_ERROR_SYMBOL in error;
+}
+
+function _isDoNotSendEventError(error: unknown): error is DoNotSendEventError {
+  return !!error && typeof error === 'object' && DO_NOT_SEND_EVENT_SYMBOL in error;
+}
 
 /**
  * Base implementation for all JavaScript SDK clients.
@@ -474,6 +490,7 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
         spanAttributes: SpanAttributes;
         spanName: string;
         parentSampled?: boolean;
+        parentSampleRate?: number;
         parentContext?: SpanContextData;
       },
       samplingDecision: { decision: boolean },
@@ -622,6 +639,27 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
   public on(hook: 'close', callback: () => void): () => void;
 
   /**
+   * A hook that is called before a log is captured. This hooks runs before `beforeSendLog` is fired.
+   *
+   * @returns {() => void} A function that, when executed, removes the registered callback.
+   */
+  public on(hook: 'beforeCaptureLog', callback: (log: Log) => void): () => void;
+
+  /**
+   * A hook that is called after a log is captured
+   *
+   * @returns {() => void} A function that, when executed, removes the registered callback.
+   */
+  public on(hook: 'afterCaptureLog', callback: (log: Log) => void): () => void;
+
+  /**
+   * A hook that is called when the client is flushing logs
+   *
+   * @returns {() => void} A function that, when executed, removes the registered callback.
+   */
+  public on(hook: 'flushLogs', callback: () => void): () => void;
+
+  /**
    * Register a hook on this client.
    */
   public on(hook: string, callback: unknown): () => void {
@@ -653,6 +691,7 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
       spanAttributes: SpanAttributes;
       spanName: string;
       parentSampled?: boolean;
+      parentSampleRate?: number;
       parentContext?: SpanContextData;
     },
     samplingDecision: { decision: boolean },
@@ -767,6 +806,21 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
    * Emit a hook event for client close
    */
   public emit(hook: 'close'): void;
+
+  /**
+   * Emit a hook event for client before capturing a log. This hooks runs before `beforeSendLog` is fired.
+   */
+  public emit(hook: 'beforeCaptureLog', log: Log): void;
+
+  /**
+   * Emit a hook event for client after capturing a log.
+   */
+  public emit(hook: 'afterCaptureLog', log: Log): void;
+
+  /**
+   * Emit a hook event for client flush logs
+   */
+  public emit(hook: 'flushLogs'): void;
 
   /**
    * Emit a hook that was previously registered via `on()`.
@@ -950,10 +1004,10 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
       },
       reason => {
         if (DEBUG_BUILD) {
-          // If something's gone wrong, log the error as a warning. If it's just us having used a `SentryError` for
-          // control flow, log just the message (no stack) as a log-level log.
-          if (reason instanceof SentryError && reason.logLevel === 'log') {
+          if (_isDoNotSendEventError(reason)) {
             logger.log(reason.message);
+          } else if (_isInternalError(reason)) {
+            logger.warn(reason.message);
           } else {
             logger.warn(reason);
           }
@@ -997,9 +1051,8 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
     if (isError && typeof parsedSampleRate === 'number' && Math.random() > parsedSampleRate) {
       this.recordDroppedEvent('sample_rate', 'error');
       return rejectedSyncPromise(
-        new SentryError(
+        _makeDoNotSendEventError(
           `Discarding event because it's not included in the random sample (sampling rate = ${sampleRate})`,
-          'log',
         ),
       );
     }
@@ -1010,7 +1063,7 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
       .then(prepared => {
         if (prepared === null) {
           this.recordDroppedEvent('event_processor', dataCategory);
-          throw new SentryError('An event processor returned `null`, will not send event.', 'log');
+          throw _makeDoNotSendEventError('An event processor returned `null`, will not send event.');
         }
 
         const isInternalException = hint.data && (hint.data as { __sentry__: boolean }).__sentry__ === true;
@@ -1030,7 +1083,7 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
             const spanCount = 1 + spans.length;
             this.recordDroppedEvent('before_send', 'span', spanCount);
           }
-          throw new SentryError(`${beforeSendLabel} returned \`null\`, will not send event.`, 'log');
+          throw _makeDoNotSendEventError(`${beforeSendLabel} returned \`null\`, will not send event.`);
         }
 
         const session = currentScope.getSession() || isolationScope.getSession();
@@ -1064,7 +1117,7 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
         return processedEvent;
       })
       .then(null, reason => {
-        if (reason instanceof SentryError) {
+        if (_isDoNotSendEventError(reason) || _isInternalError(reason)) {
           throw reason;
         }
 
@@ -1074,7 +1127,7 @@ export abstract class Client<O extends ClientOptions = ClientOptions> {
           },
           originalException: reason,
         });
-        throw new SentryError(
+        throw _makeInternalError(
           `Event processing pipeline threw an error, original event will not be sent. Details have been sent as a new event.\nReason: ${reason}`,
         );
       });
@@ -1180,16 +1233,16 @@ function _validateBeforeSendResult(
     return beforeSendResult.then(
       event => {
         if (!isPlainObject(event) && event !== null) {
-          throw new SentryError(invalidValueError);
+          throw _makeInternalError(invalidValueError);
         }
         return event;
       },
       e => {
-        throw new SentryError(`${beforeSendLabel} rejected with ${e}`);
+        throw _makeInternalError(`${beforeSendLabel} rejected with ${e}`);
       },
     );
   } else if (!isPlainObject(beforeSendResult) && beforeSendResult !== null) {
-    throw new SentryError(invalidValueError);
+    throw _makeInternalError(invalidValueError);
   }
   return beforeSendResult;
 }
@@ -1271,10 +1324,12 @@ export function _getTraceInfoFromScope(
     return [undefined, undefined];
   }
 
-  const span = _getSpanForScope(scope);
-  const traceContext = span ? spanToTraceContext(span) : getTraceContextFromScope(scope);
-  const dynamicSamplingContext = span
-    ? getDynamicSamplingContextFromSpan(span)
-    : getDynamicSamplingContextFromScope(client, scope);
-  return [dynamicSamplingContext, traceContext];
+  return withScope(scope, () => {
+    const span = getActiveSpan();
+    const traceContext = span ? spanToTraceContext(span) : getTraceContextFromScope(scope);
+    const dynamicSamplingContext = span
+      ? getDynamicSamplingContextFromSpan(span)
+      : getDynamicSamplingContextFromScope(client, scope);
+    return [dynamicSamplingContext, traceContext];
+  });
 }

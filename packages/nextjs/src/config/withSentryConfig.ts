@@ -1,19 +1,50 @@
+/* eslint-disable max-lines */
 /* eslint-disable complexity */
 import { isThenable, parseSemver } from '@sentry/core';
-
-import * as childProcess from 'child_process';
 import { getSentryRelease } from '@sentry/node';
-
+import * as childProcess from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import type {
   ExportedNextConfig as NextConfig,
   NextConfigFunction,
   NextConfigObject,
   SentryBuildOptions,
 } from './types';
-import { constructWebpackConfigFunction } from './webpack';
 import { getNextjsVersion } from './util';
+import { constructWebpackConfigFunction } from './webpack';
 
 let showedExportModeTunnelWarning = false;
+let showedExperimentalBuildModeWarning = false;
+
+// Packages we auto-instrument need to be external for instrumentation to work
+// Next.js externalizes some packages by default, see: https://nextjs.org/docs/app/api-reference/config/next-config-js/serverExternalPackages
+// Others we need to add ourselves
+export const DEFAULT_SERVER_EXTERNAL_PACKAGES = [
+  'ai',
+  'amqplib',
+  'connect',
+  'dataloader',
+  'express',
+  'generic-pool',
+  'graphql',
+  '@hapi/hapi',
+  'ioredis',
+  'kafkajs',
+  'koa',
+  'lru-memoizer',
+  'mongodb',
+  'mongoose',
+  'mysql',
+  'mysql2',
+  'knex',
+  'pg',
+  'pg-pool',
+  '@node-redis/client',
+  '@redis/client',
+  'redis',
+  'tedious',
+];
 
 /**
  * Modifies the passed in Next.js configuration with automatic build-time instrumentation and source map upload.
@@ -44,12 +75,23 @@ export function withSentryConfig<C>(nextConfig?: C, sentryBuildOptions: SentryBu
   }
 }
 
+/**
+ * Generates a random tunnel route path that's less likely to be blocked by ad-blockers
+ */
+function generateRandomTunnelRoute(): string {
+  // Generate a random 8-character alphanumeric string
+  const randomString = Math.random().toString(36).substring(2, 10);
+  return `/${randomString}`;
+}
+
 // Modify the materialized object form of the user's next config by deleting the `sentry` property and wrapping the
 // `webpack` property
 function getFinalConfigObject(
   incomingUserNextConfigObject: NextConfigObject,
   userSentryOptions: SentryBuildOptions,
 ): NextConfigObject {
+  const releaseName = userSentryOptions.release?.name ?? getSentryRelease() ?? getGitRevision();
+
   if (userSentryOptions?.tunnelRoute) {
     if (incomingUserNextConfigObject.output === 'export') {
       if (!showedExportModeTunnelWarning) {
@@ -60,11 +102,39 @@ function getFinalConfigObject(
         );
       }
     } else {
-      setUpTunnelRewriteRules(incomingUserNextConfigObject, userSentryOptions.tunnelRoute);
+      const resolvedTunnelRoute =
+        typeof userSentryOptions.tunnelRoute === 'boolean'
+          ? generateRandomTunnelRoute()
+          : userSentryOptions.tunnelRoute;
+
+      // Update the global options object to use the resolved value everywhere
+      userSentryOptions.tunnelRoute = resolvedTunnelRoute;
+      setUpTunnelRewriteRules(incomingUserNextConfigObject, resolvedTunnelRoute);
     }
   }
 
-  setUpBuildTimeVariables(incomingUserNextConfigObject, userSentryOptions);
+  if (process.argv.includes('--experimental-build-mode')) {
+    if (!showedExperimentalBuildModeWarning) {
+      showedExperimentalBuildModeWarning = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[@sentry/nextjs] The Sentry Next.js SDK does not currently fully support next build --experimental-build-mode',
+      );
+    }
+    if (process.argv.includes('generate')) {
+      // Next.js v15.3.0-canary.1 splits the experimental build into two phases:
+      // 1. compile: Code compilation
+      // 2. generate: Environment variable inlining and prerendering (We don't instrument this phase, we inline in the compile phase)
+      //
+      // We assume a single “full” build and reruns Webpack instrumentation in both phases.
+      // During the generate step it collides with Next.js’s inliner
+      // producing malformed JS and build failures.
+      // We skip Sentry processing during generate to avoid this issue.
+      return incomingUserNextConfigObject;
+    }
+  }
+
+  setUpBuildTimeVariables(incomingUserNextConfigObject, userSentryOptions, releaseName);
 
   const nextJsVersion = getNextjsVersion();
 
@@ -153,15 +223,30 @@ function getFinalConfigObject(
     }
   }
 
+  // We wanna check whether the user added a `onRouterTransitionStart` handler to their client instrumentation file.
+  const instrumentationClientFileContents = getInstrumentationClientFileContents();
+  if (
+    instrumentationClientFileContents !== undefined &&
+    !instrumentationClientFileContents.includes('onRouterTransitionStart')
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[@sentry/nextjs] ACTION REQUIRED: To instrument navigations, the Sentry SDK requires you to export an `onRouterTransitionStart` hook from your `instrumentation-client.(js|ts)` file. You can do so by adding `export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;` to the file.',
+    );
+  }
+
+  let nextMajor: number | undefined;
   if (nextJsVersion) {
     const { major, minor, patch, prerelease } = parseSemver(nextJsVersion);
+    nextMajor = major;
     const isSupportedVersion =
       major !== undefined &&
       minor !== undefined &&
       patch !== undefined &&
       (major > 15 ||
         (major === 15 && minor > 3) ||
-        (major === 15 && minor === 3 && patch > 0 && prerelease === undefined));
+        (major === 15 && minor === 3 && patch === 0 && prerelease === undefined) ||
+        (major === 15 && minor === 3 && patch > 0));
     const isSupportedCanary =
       major !== undefined &&
       minor !== undefined &&
@@ -171,15 +256,10 @@ function getFinalConfigObject(
       minor === 3 &&
       patch === 0 &&
       prerelease.startsWith('canary.') &&
-      parseInt(prerelease.split('.')[1] || '', 10) >= 8;
+      parseInt(prerelease.split('.')[1] || '', 10) >= 28;
     const supportsClientInstrumentation = isSupportedCanary || isSupportedVersion;
 
-    if (supportsClientInstrumentation) {
-      incomingUserNextConfigObject.experimental = {
-        clientInstrumentationHook: true,
-        ...incomingUserNextConfigObject.experimental,
-      };
-    } else if (process.env.TURBOPACK) {
+    if (!supportsClientInstrumentation && process.env.TURBOPACK) {
       if (process.env.NODE_ENV === 'development') {
         // eslint-disable-next-line no-console
         console.warn(
@@ -192,25 +272,26 @@ function getFinalConfigObject(
         );
       }
     }
-  } else {
-    // If we cannot detect a Next.js version for whatever reason, the sensible default is still to set the `experimental.instrumentationHook`.
-    incomingUserNextConfigObject.experimental = {
-      clientInstrumentationHook: true,
-      ...incomingUserNextConfigObject.experimental,
-    };
   }
-
-  if (incomingUserNextConfigObject.experimental?.clientInstrumentationHook === false) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[@sentry/nextjs] WARNING: You set the `experimental.clientInstrumentationHook` option to `false`. Note that Sentry will not be initialized if you did not set it up inside `instrumentation-client.(js|ts)`.',
-    );
-  }
-
-  const releaseName = userSentryOptions.release?.name ?? getSentryRelease() ?? getGitRevision();
 
   return {
     ...incomingUserNextConfigObject,
+    ...(nextMajor && nextMajor >= 15
+      ? {
+          serverExternalPackages: [
+            ...(incomingUserNextConfigObject.serverExternalPackages || []),
+            ...DEFAULT_SERVER_EXTERNAL_PACKAGES,
+          ],
+        }
+      : {
+          experimental: {
+            ...incomingUserNextConfigObject.experimental,
+            serverComponentsExternalPackages: [
+              ...(incomingUserNextConfigObject.experimental?.serverComponentsExternalPackages || []),
+              ...DEFAULT_SERVER_EXTERNAL_PACKAGES,
+            ],
+          },
+        }),
     webpack: constructWebpackConfigFunction(incomingUserNextConfigObject, userSentryOptions, releaseName),
   };
 }
@@ -291,12 +372,18 @@ function setUpTunnelRewriteRules(userNextConfig: NextConfigObject, tunnelPath: s
   };
 }
 
-// TODO: For Turbopack we need to pass the release name here and pick it up in the SDK
-function setUpBuildTimeVariables(userNextConfig: NextConfigObject, userSentryOptions: SentryBuildOptions): void {
+function setUpBuildTimeVariables(
+  userNextConfig: NextConfigObject,
+  userSentryOptions: SentryBuildOptions,
+  releaseName: string | undefined,
+): void {
   const assetPrefix = userNextConfig.assetPrefix || userNextConfig.basePath || '';
   const basePath = userNextConfig.basePath ?? '';
+
   const rewritesTunnelPath =
-    userSentryOptions.tunnelRoute !== undefined && userNextConfig.output !== 'export'
+    userSentryOptions.tunnelRoute !== undefined &&
+    userNextConfig.output !== 'export' &&
+    typeof userSentryOptions.tunnelRoute === 'string'
       ? `${basePath}${userSentryOptions.tunnelRoute}`
       : undefined;
 
@@ -335,6 +422,10 @@ function setUpBuildTimeVariables(userNextConfig: NextConfigObject, userSentryOpt
     buildTimeVariables._experimentalThirdPartyOriginStackFrames = 'true';
   }
 
+  if (releaseName) {
+    buildTimeVariables._sentryRelease = releaseName;
+  }
+
   if (typeof userNextConfig.env === 'object') {
     userNextConfig.env = { ...buildTimeVariables, ...userNextConfig.env };
   } else if (userNextConfig.env === undefined) {
@@ -353,4 +444,21 @@ function getGitRevision(): string | undefined {
     // noop
   }
   return gitRevision;
+}
+
+function getInstrumentationClientFileContents(): string | void {
+  const potentialInstrumentationClientFileLocations = [
+    ['src', 'instrumentation-client.ts'],
+    ['src', 'instrumentation-client.js'],
+    ['instrumentation-client.ts'],
+    ['instrumentation-client.js'],
+  ];
+
+  for (const pathSegments of potentialInstrumentationClientFileLocations) {
+    try {
+      return fs.readFileSync(path.join(process.cwd(), ...pathSegments), 'utf-8');
+    } catch {
+      // noop
+    }
+  }
 }

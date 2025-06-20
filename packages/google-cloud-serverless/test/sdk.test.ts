@@ -1,9 +1,11 @@
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { init } from '../src/sdk';
 
-const mockInit = jest.fn();
+const mockInit = vi.fn();
 
-jest.mock('@sentry/node', () => {
-  const original = jest.requireActual('@sentry/node');
+vi.mock('@sentry/node', async () => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  const original = (await vi.importActual('@sentry/node')) as typeof import('@sentry/node');
   return {
     ...original,
     init: (options: unknown) => {
@@ -14,7 +16,7 @@ jest.mock('@sentry/node', () => {
 
 describe('init()', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   test('calls Sentry.init with correct sdk info metadata', () => {

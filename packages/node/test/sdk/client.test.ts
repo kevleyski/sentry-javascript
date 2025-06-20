@@ -1,9 +1,9 @@
-import * as os from 'os';
 import { ProxyTracer } from '@opentelemetry/api';
 import * as opentelemetryInstrumentationPackage from '@opentelemetry/instrumentation';
-import type { Event, EventHint } from '@sentry/core';
-import { SDK_VERSION, Scope, getCurrentScope, getGlobalScope, getIsolationScope } from '@sentry/core';
+import type { Event, EventHint, Log } from '@sentry/core';
+import { getCurrentScope, getGlobalScope, getIsolationScope, Scope, SDK_VERSION } from '@sentry/core';
 import { setOpenTelemetryContextAsyncContextStrategy } from '@sentry/opentelemetry';
+import * as os from 'os';
 import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
 import { NodeClient } from '../../src';
 import { getDefaultNodeClientOptions } from '../helpers/getDefaultNodeClientOptions';
@@ -127,6 +127,18 @@ describe('NodeClient', () => {
       client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.server_name).toEqual(os.hostname());
+    });
+
+    test('does not add hostname when includeServerName = false', () => {
+      const options = getDefaultNodeClientOptions({});
+      options.includeServerName = false;
+      const client = new NodeClient(options);
+
+      const event: Event = {};
+      const hint: EventHint = {};
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
+
+      expect(event.server_name).toBeUndefined();
     });
 
     test("doesn't clobber existing runtime data", () => {
@@ -280,5 +292,33 @@ describe('NodeClient', () => {
         instrumentations: instrumentationsArray,
       }),
     );
+  });
+
+  describe('log capture', () => {
+    it('adds server name to log attributes', () => {
+      const options = getDefaultNodeClientOptions({ _experiments: { enableLogs: true } });
+      const client = new NodeClient(options);
+
+      const log: Log = { level: 'info', message: 'test message', attributes: {} };
+      client.emit('beforeCaptureLog', log);
+
+      expect(log.attributes).toEqual({
+        'server.address': expect.any(String),
+      });
+    });
+
+    it('preserves existing log attributes', () => {
+      const serverName = 'test-server';
+      const options = getDefaultNodeClientOptions({ serverName, _experiments: { enableLogs: true } });
+      const client = new NodeClient(options);
+
+      const log: Log = { level: 'info', message: 'test message', attributes: { 'existing.attr': 'value' } };
+      client.emit('beforeCaptureLog', log);
+
+      expect(log.attributes).toEqual({
+        'existing.attr': 'value',
+        'server.address': serverName,
+      });
+    });
   });
 });

@@ -1,5 +1,5 @@
 import type { BrowserClientReplayOptions, Client, Integration, IntegrationFn, ReplayRecordingMode } from '@sentry/core';
-import { consoleSandbox, dropUndefinedKeys, isBrowser, parseSampleRate } from '@sentry/core';
+import { consoleSandbox, isBrowser, parseSampleRate } from '@sentry/core';
 import {
   DEFAULT_FLUSH_MAX_DELAY,
   DEFAULT_FLUSH_MIN_DELAY,
@@ -95,7 +95,7 @@ export class Replay implements Integration {
     networkResponseHeaders = [],
 
     mask = [],
-    maskAttributes = ['title', 'placeholder'],
+    maskAttributes = ['title', 'placeholder', 'aria-label'],
     unmask = [],
     block = [],
     unblock = [],
@@ -356,7 +356,7 @@ function loadReplayOptionsFromClient(initialOptions: InitialReplayPluginOptions,
   const finalOptions: ReplayPluginOptions = {
     sessionSampleRate: 0,
     errorSampleRate: 0,
-    ...dropUndefinedKeys(initialOptions),
+    ...initialOptions,
   };
 
   const replaysSessionSampleRate = parseSampleRate(opt.replaysSessionSampleRate);

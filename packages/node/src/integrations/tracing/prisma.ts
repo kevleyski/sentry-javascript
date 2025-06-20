@@ -1,17 +1,11 @@
 import type { Instrumentation } from '@opentelemetry/instrumentation';
-// When importing CJS modules into an ESM module, we cannot import the named exports directly.
-import * as prismaInstrumentation from '@prisma/instrumentation';
-import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, consoleSandbox, defineIntegration, spanToJSON } from '@sentry/core';
+import { PrismaInstrumentation } from '@prisma/instrumentation';
+import { consoleSandbox, defineIntegration, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, spanToJSON } from '@sentry/core';
 import { generateInstrumentOnce } from '../../otel/instrument';
 import type { PrismaV5TracingHelper } from './prisma/vendor/v5-tracing-helper';
 import type { PrismaV6TracingHelper } from './prisma/vendor/v6-tracing-helper';
 
 const INTEGRATION_NAME = 'Prisma';
-
-const EsmInteropPrismaInstrumentation: typeof prismaInstrumentation.PrismaInstrumentation =
-  // @ts-expect-error We need to do the following for interop reasons
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  prismaInstrumentation.default?.PrismaInstrumentation || prismaInstrumentation.PrismaInstrumentation;
 
 type CompatibilityLayerTraceHelper = PrismaV5TracingHelper & PrismaV6TracingHelper;
 
@@ -19,7 +13,19 @@ function isPrismaV6TracingHelper(helper: unknown): helper is PrismaV6TracingHelp
   return !!helper && typeof helper === 'object' && 'dispatchEngineSpans' in helper;
 }
 
-class SentryPrismaInteropInstrumentation extends EsmInteropPrismaInstrumentation {
+function getPrismaTracingHelper(): unknown | undefined {
+  const prismaInstrumentationObject = (globalThis as Record<string, unknown>).PRISMA_INSTRUMENTATION;
+  const prismaTracingHelper =
+    prismaInstrumentationObject &&
+    typeof prismaInstrumentationObject === 'object' &&
+    'helper' in prismaInstrumentationObject
+      ? prismaInstrumentationObject.helper
+      : undefined;
+
+  return prismaTracingHelper;
+}
+
+class SentryPrismaInteropInstrumentation extends PrismaInstrumentation {
   public constructor() {
     super();
   }
@@ -30,13 +36,7 @@ class SentryPrismaInteropInstrumentation extends EsmInteropPrismaInstrumentation
     // The PrismaIntegration (super class) defines a global variable `global["PRISMA_INSTRUMENTATION"]` when `enable()` is called. This global variable holds a "TracingHelper" which Prisma uses internally to create tracing data. It's their way of not depending on OTEL with their main package. The sucky thing is, prisma broke the interface of the tracing helper with the v6 major update. This means that if you use Prisma 5 with the v6 instrumentation (or vice versa) Prisma just blows up, because tries to call methods on the helper that no longer exist.
     // Because we actually want to use the v6 instrumentation and not blow up in Prisma 5 user's faces, what we're doing here is backfilling the v5 method (`createEngineSpan`) with a noop so that no longer crashes when it attempts to call that function.
     // We still won't fully emit all the spans, but this could potentially be implemented in the future.
-    const prismaInstrumentationObject = (globalThis as Record<string, unknown>).PRISMA_INSTRUMENTATION;
-    const prismaTracingHelper =
-      prismaInstrumentationObject &&
-      typeof prismaInstrumentationObject === 'object' &&
-      'helper' in prismaInstrumentationObject
-        ? prismaInstrumentationObject.helper
-        : undefined;
+    const prismaTracingHelper = getPrismaTracingHelper();
 
     let emittedWarning = false;
 
@@ -119,6 +119,12 @@ export const prismaIntegration = defineIntegration(
         instrumentPrisma({ prismaInstrumentation });
       },
       setup(client) {
+        // If no tracing helper exists, we skip any work here
+        // this means that prisma is not being used
+        if (!getPrismaTracingHelper()) {
+          return;
+        }
+
         client.on('spanStart', span => {
           const spanJSON = spanToJSON(span);
           if (spanJSON.description?.startsWith('prisma:')) {

@@ -1,11 +1,10 @@
 import type { UndiciInstrumentationConfig } from '@opentelemetry/instrumentation-undici';
 import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import type { IntegrationFn } from '@sentry/core';
-import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, defineIntegration, getClient } from '@sentry/core';
+import { defineIntegration, getClient, hasSpansEnabled, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN } from '@sentry/core';
 import { generateInstrumentOnce } from '../../otel/instrument';
 import type { NodeClient } from '../../sdk/client';
 import type { NodeClientOptions } from '../../types';
-import type { SentryNodeFetchInstrumentationOptions } from './SentryNodeFetchInstrumentation';
 import { SentryNodeFetchInstrumentation } from './SentryNodeFetchInstrumentation';
 
 const INTEGRATION_NAME = 'NodeFetch';
@@ -33,14 +32,19 @@ interface NodeFetchOptions {
   ignoreOutgoingRequests?: (url: string) => boolean;
 }
 
-const instrumentOtelNodeFetch = generateInstrumentOnce<UndiciInstrumentationConfig>(INTEGRATION_NAME, config => {
-  return new UndiciInstrumentation(config);
-});
+const instrumentOtelNodeFetch = generateInstrumentOnce(
+  INTEGRATION_NAME,
+  UndiciInstrumentation,
+  (options: NodeFetchOptions) => {
+    return getConfigWithDefaults(options);
+  },
+);
 
-const instrumentSentryNodeFetch = generateInstrumentOnce<SentryNodeFetchInstrumentationOptions>(
+const instrumentSentryNodeFetch = generateInstrumentOnce(
   `${INTEGRATION_NAME}.sentry`,
-  config => {
-    return new SentryNodeFetchInstrumentation(config);
+  SentryNodeFetchInstrumentation,
+  (options: NodeFetchOptions) => {
+    return options;
   },
 );
 
@@ -52,8 +56,7 @@ const _nativeNodeFetchIntegration = ((options: NodeFetchOptions = {}) => {
 
       // This is the "regular" OTEL instrumentation that emits spans
       if (instrumentSpans) {
-        const instrumentationConfig = getConfigWithDefaults(options);
-        instrumentOtelNodeFetch(instrumentationConfig);
+        instrumentOtelNodeFetch(options);
       }
 
       // This is the Sentry-specific instrumentation that creates breadcrumbs & propagates traces
@@ -83,8 +86,10 @@ function getAbsoluteUrl(origin: string, path: string = '/'): string {
 
 function _shouldInstrumentSpans(options: NodeFetchOptions, clientOptions: Partial<NodeClientOptions> = {}): boolean {
   // If `spans` is passed in, it takes precedence
-  // Else, we by default emit spans, unless `skipOpenTelemetrySetup` is set to `true`
-  return typeof options.spans === 'boolean' ? options.spans : !clientOptions.skipOpenTelemetrySetup;
+  // Else, we by default emit spans, unless `skipOpenTelemetrySetup` is set to `true` or spans are not enabled
+  return typeof options.spans === 'boolean'
+    ? options.spans
+    : !clientOptions.skipOpenTelemetrySetup && hasSpansEnabled(clientOptions);
 }
 
 function getConfigWithDefaults(options: Partial<NodeFetchOptions> = {}): UndiciInstrumentationConfig {

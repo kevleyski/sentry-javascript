@@ -1,10 +1,13 @@
 import { describe, expect, it, test, vi } from 'vitest';
-import type { SpanJSON } from '../../../src';
-import { SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, getCurrentScope, setCurrentClient, timestampInSeconds } from '../../../src';
+import { getCurrentScope } from '../../../src/currentScopes';
+import { setCurrentClient } from '../../../src/sdk';
+import { SEMANTIC_ATTRIBUTE_SENTRY_SOURCE } from '../../../src/semanticAttributes';
 import { SentrySpan } from '../../../src/tracing/sentrySpan';
 import { SPAN_STATUS_ERROR } from '../../../src/tracing/spanstatus';
-import { TRACE_FLAG_NONE, TRACE_FLAG_SAMPLED, spanToJSON } from '../../../src/utils/spanUtils';
-import { TestClient, getDefaultTestClientOptions } from '../../mocks/client';
+import type { SpanJSON } from '../../../src/types-hoist/span';
+import { spanToJSON, TRACE_FLAG_NONE, TRACE_FLAG_SAMPLED } from '../../../src/utils/spanUtils';
+import { timestampInSeconds } from '../../../src/utils/time';
+import { getDefaultTestClientOptions, TestClient } from '../../mocks/client';
 
 describe('SentrySpan', () => {
   describe('name', () => {
@@ -74,26 +77,6 @@ describe('SentrySpan', () => {
       expect(serialized).toHaveProperty('parent_span_id', 'b');
       expect(serialized).toHaveProperty('span_id', 'd');
       expect(serialized).toHaveProperty('trace_id', 'c');
-    });
-
-    test('should drop all `undefined` values', () => {
-      const spanA = new SentrySpan({ traceId: 'a', spanId: 'b' });
-      const spanB = new SentrySpan({
-        parentSpanId: spanA.spanContext().spanId,
-        spanId: 'd',
-        traceId: 'c',
-      });
-      const serialized = spanToJSON(spanB);
-      expect(serialized).toStrictEqual({
-        start_timestamp: expect.any(Number),
-        parent_span_id: 'b',
-        span_id: 'd',
-        trace_id: 'c',
-        origin: 'manual',
-        data: {
-          'sentry.origin': 'manual',
-        },
-      });
     });
   });
 

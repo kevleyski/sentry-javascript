@@ -1,25 +1,6 @@
-export type LogSeverityLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'critical';
+import type { ParameterizedString } from './parameterize';
 
-export type SerializedLogAttributeValueType =
-  | {
-      stringValue: string;
-    }
-  | {
-      // integers must be represented as a string
-      // because JSON cannot differentiate between integers and floats
-      intValue: string;
-    }
-  | {
-      boolValue: boolean;
-    }
-  | {
-      doubleValue: number;
-    };
-
-export type SerializedLogAttribute = {
-  key: string;
-  value: SerializedLogAttributeValueType;
-};
+export type LogSeverityLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 export interface Log {
   /**
@@ -34,46 +15,59 @@ export interface Log {
   level: LogSeverityLevel;
 
   /**
-   * The message to be logged - for example, 'hello world' would become a log like '[INFO] hello world'
+   * The message to be logged.
    */
-  message: string;
+  message: ParameterizedString;
 
   /**
    * Arbitrary structured data that stores information about the log - e.g., userId: 100.
    */
-  attributes?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  attributes?: Record<string, unknown>;
 
   /**
-   * The severity number - generally higher severity are levels like 'error' and lower are levels like 'debug'
+   * The severity number.
    */
   severityNumber?: number;
 }
 
-export interface SerializedOtelLog {
-  severityText?: Log['level'];
+export type SerializedLogAttributeValue =
+  | { value: string; type: 'string' }
+  | { value: number; type: 'integer' }
+  | { value: number; type: 'double' }
+  | { value: boolean; type: 'boolean' };
+
+export interface SerializedLog {
+  /**
+   * Timestamp in seconds (epoch time) indicating when the  log occurred.
+   */
+  timestamp: number;
+
+  /**
+   * The severity level of the log. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`.
+   */
+  level: LogSeverityLevel;
+
+  /**
+   * The log body.
+   */
+  body: Log['message'];
 
   /**
    * The trace ID for this log
    */
-  traceId?: string;
-
-  severityNumber?: Log['severityNumber'];
-
-  body: {
-    stringValue: Log['message'];
-  };
+  trace_id?: string;
 
   /**
    * Arbitrary structured data that stores information about the log - e.g., userId: 100.
    */
-  attributes?: SerializedLogAttribute[];
+  attributes?: Record<string, SerializedLogAttributeValue>;
 
   /**
-   * This doesn't have to be explicitly specified most of the time. If you need to set it, the value
-   * is the number of seconds since midnight on January 1, 1970 ("unix epoch time")
-   *
-   * @summary A timestamp representing when the log occurred.
-   * @link https://develop.sentry.dev/sdk/event-payloads/breadcrumbs/#:~:text=is%20info.-,timestamp,-(recommended)
+   * The severity number.
    */
-  timeUnixNano?: string;
+  severity_number?: Log['severityNumber'];
 }
+
+export type SerializedLogContainer = {
+  items: Array<SerializedLog>;
+};
